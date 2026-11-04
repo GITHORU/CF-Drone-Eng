@@ -5,7 +5,7 @@
 #define VBAT_ADC_PIN       BOARD_VBAT_ADC_PIN     // battery voltage sense pin
 #define VBAT_ADC_SAMPLES   BOARD_VBAT_ADC_SAMPLES  // ADC samples: C3=8 (less blocking) / ESP32 and S3=16 (less noise)
 #define VBAT_DIVIDER       (43.0f / 33.0f)  // divider: 10k top + 33k bottom, Vbat = Vadc * 43/33
-#define VBAT_WARN_THRESHOLD    -1.0f  // L1 disabled for now: arming is not blocked by battery voltage
+#define VBAT_WARN_THRESHOLD  -999.0f  // L1 disabled for now: arming is not blocked by battery voltage
 #define VBAT_LOW_THRESHOLD      3.3f  // L2: in-flight low-battery warning (V)
 #define VBAT_CRITICAL_THRESHOLD 3.0f  // L3: in-flight critical level, auto-land (V)
 #define VBAT_ABSENT_THRESHOLD   0.5f  // below this, treat as no battery and ignore alarms

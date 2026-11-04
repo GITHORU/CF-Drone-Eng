@@ -29,7 +29,7 @@ float levelGateThreshold = 0.2f; // stick gate threshold, parameter EST_LVL_GATE
 float levelBiasGain = 0;  // Mahony I gain (off: cannot tell gyro temperature drift from a mechanical offset)
 Vector levelGyroBias(0, 0, 0); // virtual gyro bias estimated by applyLevel(), rad/s
 
-extern float controlRoll, controlPitch; // pilot sticks, defined in CF-Drone.ino
+extern float controlRoll, controlPitch; // pilot sticks, defined in CF-Drone-Eng.ino
 LowPassFilter<Vector> ratesFilter(0.2); // cutoff frequency ~ 40 Hz
 
 void estimate() {

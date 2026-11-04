@@ -2,3 +2,4 @@ build/*
 docs/*
 .github/*
 .vscode/*
+ESP32-/

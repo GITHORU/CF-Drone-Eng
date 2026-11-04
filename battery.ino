@@ -7,7 +7,7 @@
 #define VBAT_DIVIDER       (43.0f / 33.0f)  // divider: 10k top + 33k bottom, Vbat = Vadc * 43/33
 #define VBAT_WARN_THRESHOLD  -999.0f  // L1 disabled for now: arming is not blocked by battery voltage
 #define VBAT_LOW_THRESHOLD      3.3f  // L2: in-flight low-battery warning (V)
-#define VBAT_CRITICAL_THRESHOLD 3.0f  // L3: in-flight critical level, auto-land (V)
+#define VBAT_CRITICAL_THRESHOLD -999.0f // L3 disabled for now: no auto-land on low voltage
 #define VBAT_ABSENT_THRESHOLD   0.5f  // below this, treat as no battery and ignore alarms
 
 #define BATTERY_FLYING_THRUST_MIN    0.15f  // thrust at or above this counts as flying; L1 does not apply

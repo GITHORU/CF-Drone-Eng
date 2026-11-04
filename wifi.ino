@@ -1,4 +1,4 @@
-// Wi-Fi功能支持
+// Wi-Fi support
 
 #if WIFI_ENABLED
 
@@ -7,7 +7,7 @@
 #include <WiFiUdp.h>
 #include "Preferences.h"
 
-extern Preferences storage; // 复用主存储
+extern Preferences storage; // shared parameter store
 
 const int W_DISABLED = 0, W_AP = 1, W_STA = 2;
 int wifiMode = W_AP;
@@ -78,7 +78,7 @@ void configWiFi(bool ap, const char *ssid, const char *password) {
 		storage.putString("WIFI_STA_SSID", ssid);
 		storage.putString("WIFI_STA_PASS", password);
 	}
-	print("✓ 重启后生效 Reboot to apply new settings\n");
+	print("Reboot to apply new settings\n");
 }
 
 #endif

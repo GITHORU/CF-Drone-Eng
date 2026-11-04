@@ -1,4 +1,3 @@
-// 轻量级矢量库
 // Lightweight vector library
 
 #pragma once

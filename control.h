@@ -2,16 +2,16 @@
 #ifndef CONTROL_H
 #define CONTROL_H
 
-// 飞行模式定义
+// Flight mode ids
 enum FlightMode {
     MODE_MANUAL = 0,
     MODE_ACRO = 1,
     MODE_STAB = 2,
-    MODE_ALTHOLD = 3,  // 气压计定高（油门=升降速率）
+    MODE_ALTHOLD = 3,  // barometer altitude hold (throttle = climb rate)
     MODE_AUTO = 4
 };
 
-// 控制状态结构
+// Control state
 struct ControlState {
     int mode;
     bool armed;
@@ -21,7 +21,7 @@ struct ControlState {
     float yawTarget;
 };
 
-// 函数声明
+// Function declarations
 void control();
 void interpretControls();
 void interpretWebRC();
@@ -30,10 +30,10 @@ void controlAttitude();
 void controlRates();
 void controlTorque();
 
-// 辅助函数
+// Helpers
 const char* getModeName(int mode);
 
-// 外部函数声明
+// Extern declarations
 bool isUsingWebRC();
 void setWebRCWarn(const char* msg);
 

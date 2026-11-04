@@ -1,5 +1,4 @@
-// 陀螺仪加速度计相关设置
-// Work with the IMU sensor
+// Gyroscope and accelerometer
 
 #include <SPI.h>
 #include "drivers/MPU9250.h"
@@ -10,24 +9,24 @@
 
 MPU9250 imu(SPI, BOARD_SPI_CS);
 
-bool imuOK = false; // IMU 初始化是否成功；false 时禁止解锁，readIMU() 跳过等待
+bool imuOK = false; // true after a successful init. false blocks arming and readIMU() returns immediately
 
-// IMU 安装方向（欧拉角，单位 rad）。默认值 (0, 0, -PI/2) 对应本 PCB 的安装方式：
-// 芯片正面朝上，X 丝印→飞行器右侧，Y 丝印→飞行器前方 → 转换公式 Vector(data.y, -data.x, data.z)
-// 如需适配其他安装方向，修改此值并执行 `preset` 重置参数存储。
+// IMU mounting (Euler angles, rad). Default (0, 0, -PI/2) matches this PCB:
+// chip face up, silkscreen X toward the right side, silkscreen Y toward the nose -> Vector(data.y, -data.x, data.z)
+// For another mounting, change this and run `preset` to reset stored parameters.
 Vector imuRotation(0, 0, -PI / 2);
 
 Vector accBias;
 Vector accScale(1, 1, 1);
 Vector gyroBias;
-LowPassFilter<Vector> gyroBiasFilter(0.001); // 陀螺仪偏置低通估计滤波器
+LowPassFilter<Vector> gyroBiasFilter(0.001); // low-pass estimate of the gyro bias
 
 void setupIMU() {
 	print("Setup IMU\n");
 	SPI.begin(BOARD_SPI_SCK, BOARD_SPI_MISO, BOARD_SPI_MOSI, BOARD_SPI_CS);
 	if (!imu.begin()) {
-		print("⚠ IMU初始化失败！请检查 IMU 硬件连接！\n");
-		return; // 不调用 configureIMU()，不启动定时器中断，imuOK 保持 false
+		print("IMU init failed. Check the IMU wiring.\n");
+		return; // do not call configureIMU() or start the data-ready wait; imuOK stays false
 	}
 	imuOK = true;
 	configureIMU();
@@ -42,7 +41,7 @@ void configureIMU() {
 }
 
 void readIMU() {
-	if (!imuOK) return; // IMU 故障时跳过，gyro/acc 保持零值，主循环继续运行
+	if (!imuOK) return; // IMU fault: leave gyro/acc at zero and keep the main loop running
 	imu.waitForData();
 	imu.getGyro(gyro.x, gyro.y, gyro.z);
 	imu.getAccel(acc.x, acc.y, acc.z);
@@ -51,9 +50,9 @@ void readIMU() {
 	acc = (acc - accBias) / accScale;
 	gyro = gyro - gyroBias;
 	// rotate to body frame using imuRotation Euler angles
-	// 旋转四元数缓存：imuRotation 为运行时常量（仅参数变更时改变），
-	// 缓存后每帧仅做 3 次浮点比较，消除原先每帧 6 次 sinf/cosf 调用。
-	// 参数更新后首次 readIMU() 调用自动重建缓存，延迟仅 1 帧（~1 ms）。
+	// Cache the rotation quaternion. imuRotation only changes when a parameter is written.
+	// After that, each frame is 3 float compares instead of 6 sinf/cosf calls.
+	// The first readIMU() after a parameter change rebuilds the cache, one frame later (~1 ms).
 	static Quaternion _imuRotQuat;
 	static float _cachedRotX = NAN, _cachedRotY = NAN, _cachedRotZ = NAN;
 	if (imuRotation.x != _cachedRotX || imuRotation.y != _cachedRotY || imuRotation.z != _cachedRotZ) {
@@ -68,46 +67,46 @@ void readIMU() {
 
 void calibrateGyroOnce() {
 	static Delay landedDelay(2);
-	if (!landedDelay.update(landed)) return; // calibrate only if definitely stationary
+	if (!landedDelay.update(landed)) return; // calibrate only once the vehicle has been still long enough
 
 	gyroBias = gyroBiasFilter.update(gyro);
 }
 
 void calibrateAccel() {
-	print("校准陀螺仪加速计 Calibrating accelerometer\n");
+	print("Calibrating accelerometer\n");
 	imu.setAccelRange(imu.ACCEL_RANGE_2G); // the most sensitive mode
 
-	print("1/6 水平放置：机头朝前（正常飞行方向），底部朝下水平放置在平坦表面，确保完全水平无倾斜。保持不动，8秒后开始校准；\n");
+	print("1/6 Level: nose forward (normal flight direction), belly down on a flat surface, no tilt. Hold still. Calibration starts in 8 seconds.\n");
 	pause(8);
 	calibrateAccelOnce();
-	print("水平校准完成。请继续。\n");
+	print("Level face done. Continue.\n");
 	pause(1);
-	print("2/6 机头朝上：保持机头朝前,将机头指向天空，尾部朝下并接触支撑面，与地面垂直。保持不动，8秒后开始校准；\n");
+	print("2/6 Nose up: nose toward the sky, tail on the support, vertical. Hold still. Calibration starts in 8 seconds.\n");
 	pause(8);
 	calibrateAccelOnce();
-	print("机头向上校准完成。请继续。\n");
+	print("Nose-up face done. Continue.\n");
 	pause(1);
-	print("3/6 机头朝下：保持机头朝前,将机头指向地面并接触支撑面，尾部朝上，与地面垂直。保持不动，8秒后开始校准；\n");
+	print("3/6 Nose down: nose on the support, tail up, vertical. Hold still. Calibration starts in 8 seconds.\n");
 	pause(8);
 	calibrateAccelOnce();
-	print("机头向下校准完成。请继续。\n");
+	print("Nose-down face done. Continue.\n");
 	pause(1);
-	print("4/6 右侧朝下：保持机头朝前,将飞行器右侧朝下并接触支撑面，左侧机臂朝上，与地面垂直。保持不动，8秒后开始校准；\n");
+	print("4/6 Right side down: right side on the support, left arm up, vertical. Hold still. Calibration starts in 8 seconds.\n");
 	pause(8);
 	calibrateAccelOnce();
-	print("右侧向下校准完成。请继续。\n");
+	print("Right-side face done. Continue.\n");
 	pause(1);
-	print("5/6 左侧朝下：保持机头朝前,将飞行器左侧朝下并接触支撑面，右侧机臂朝上，与地面垂直。保持不动，8秒后开始校准；\n");
+	print("5/6 Left side down: left side on the support, right arm up, vertical. Hold still. Calibration starts in 8 seconds.\n");
 	pause(8);
 	calibrateAccelOnce();
-	print("左侧向下校准完成。请继续。\n");
+	print("Left-side face done. Continue.\n");
 	pause(1);
-	print("6/6 倒置放置：保持机头朝前,将飞行器完全翻转，顶部朝下、底部朝上，整体呈水平倒置状态。保持不动，8秒后开始校准；\n");
+	print("6/6 Inverted: flip the vehicle, top down and belly up, level. Hold still. Calibration starts in 8 seconds.\n");
 	pause(8);
 	calibrateAccelOnce();
 
 	printIMUCalibration();
-	print("✓全部校准完成！将机身放正，执行ps命令查看校准结果。\n");
+	print("Calibration complete. Set the vehicle upright and run ps to see the result.\n");
 	configureIMU();
 }
 
@@ -125,7 +124,7 @@ void calibrateAccelOnce() {
 		acc = acc + sample;
 
 	#ifdef CONFIG_IDF_TARGET_ESP32C3
-		// 每10帧主动让出1ms，防止单核ESP32-C3上WiFi任务因连续采样而饿死导致Beacon丢失
+		// Yield 1 ms every 10 samples so the Wi-Fi task on a single-core ESP32-C3 is not starved (beacon loss)
 		if (i % 10 == 0) delay(1);
 	#endif
 	

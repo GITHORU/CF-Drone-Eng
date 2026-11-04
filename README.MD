@@ -1,57 +1,57 @@
-ESP32无人机飞控固件
+# ESP32 drone flight-controller firmware
 
-# 硬件资料
+# Hardware
 
-## 适配硬件
-已适配ESP32/ESP32-S3
-支持6500/9250姿态传感器
+## Supported boards
+ESP32 and ESP32-S3.
+IMU: MPU6500 / MPU9250.
 
-## 官方硬件
-完美适配琛光E1系列无人机，嘉立创开源平台工程链接：
+## Official hardware
+Designed for the Cherglow E1 drone series. OSHWHub project links:
 E1_MINI https://oshwhub.com/songge8/project_qqqyfdkm
 E1_Nano https://oshwhub.com/songge8/project_fnvbukbz
 
-# 更新日志
+# Changelog
 
 ## 20260521
-* 优化姿态控制
+* Attitude control tuned
 
 ## 20260520
-* 适配ESP32-C3
-* 优化PWM频率，减轻MOS管压力
+* ESP32-C3 support
+* PWM frequency tuned to reduce MOSFET stress
 
 ## 20260515
-* 优化电压检测精度
-* 更合理的低电保护阈值
+* Battery voltage measurement accuracy improved
+* Low-battery thresholds adjusted
 
 ## 20260430
-* 优化电量报警逻辑，低电禁止解锁、自动上锁、自动降落
-* 油门推力控制逻辑优化，增加油门推力上下限参数MOT_THR_MIN和MOT_THR_MAX
-* 优化网页遥控界面
+* Low-battery behavior: block arming, auto-disarm, auto-land
+* Throttle mapping limits MOT_THR_MIN and MOT_THR_MAX
+* Web remote UI updated
 
 ## 20260428
-* 适配EPS32-C3、ESP32-S3
+* ESP32-C3 and ESP32-S3 board profiles
 
 ## 20260417
-* 修复调试日志显示不全的BUG，并优化提示命令显示
+* Debug log no longer truncated; command help cleaned up
 
 ## 20260416
-* 降低遥控器调试常规日志的打印频率
-* 服务端无法准确的监控网络信号质量，前端已经准确实现，清理服务端的网络监控
+* RC debug logs printed less often
+* Server-side link-quality monitor removed; the web UI already reports it
 
 ## 20260415
-* 增加LED状态提示，开发板状态LED解锁慢闪，低电、失联等警告状态快闪
-* 电机引脚参数化，可通过调试控制台设置
-* WIFI用户名密码参数化，可通过调试控制台设置
-* 修复网络延迟计算逻辑错误
-* 适当提高网页遥控发包频率到20Hz,为了不影响性能，建议不要超过20Hz
-* 更新一些常规功能
+* Status LED: slow blink while armed, fast blink on low battery, link loss, and similar warnings
+* Motor pins configurable from the debug console
+* Wi-Fi SSID and password configurable from the debug console
+* Network latency calculation fixed
+* Web remote send rate raised to 20 Hz; do not go higher if you want to keep loop time
+* Other routine updates
 
 ## 20260328
-* 重构WEB遥控器底层逻辑
-* 清理WEB遥控器服务端冗余
+* Web remote transport reworked
+* Unused web-remote server code removed
 
 ## 20260327
-* 大幅优化WEB遥控器
-* 添加web遥控器调试功能
-* 增加倒置保护，飞机长时间倒置判定为异常，停机避免损失扩大
+* Web remote heavily reworked
+* Web remote debug console
+* Inverted-vehicle cutoff: a long inversion is treated as a fault and motors stop

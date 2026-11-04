@@ -1,4 +1,3 @@
-// MAVLink通讯
 // MAVLink communication
 
 #if WIFI_ENABLED
@@ -9,7 +8,7 @@
 
 int mavlinkSysId = 1;
 Rate telemetrySlow(2);
-Rate telemetryFast(BOARD_MAVLINK_TELEM_FAST_HZ);  // 遥测频率：C3=5Hz（降低WiFi占用）/ ESP32&S3=10Hz
+Rate telemetryFast(BOARD_MAVLINK_TELEM_FAST_HZ);  // fast telemetry: C3=5 Hz (less Wi-Fi load) / ESP32 and S3=10 Hz
 
 bool mavlinkConnected = false;
 String mavlinkPrintBuffer;

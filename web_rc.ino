@@ -1,4 +1,4 @@
-// 网页遥控服务端
+// Web remote server
 
 #if WEB_RC_ENABLED
 
@@ -7,80 +7,80 @@
 #include "web_rc_html.h"
 #include "board_config.h"
 
-// 飞控统一控制变量（供协议适配层写入，与 SBUS/MAVLink 共用）
+// Shared pilot inputs. The web protocol writes the same variables as SBUS and MAVLink.
 extern float t;
 extern float controlTime;
 extern float controlRoll, controlPitch, controlYaw, controlThrottle, controlMode;
 
-// ==================== 配置常量 ====================
-#define WEB_RC_TIMEOUT_MS    10000          // 连接超时：最后一次收包超过此时间(ms)视为断连；需大于心跳间隔
-// VBAT_ADC_PIN / VBAT_ADC_SAMPLES / VBAT_DIVIDER 已迁移至 battery.ino
+// ==================== constants ====================
+#define WEB_RC_TIMEOUT_MS    10000          // link down if no packet arrives within this many ms; must exceed the heartbeat
+// VBAT_ADC_PIN / VBAT_ADC_SAMPLES / VBAT_DIVIDER live in battery.ino
 
-// ==================== 连接状态标志 ====================
-bool webRCEnabled    = false;  // Web RC 当前有有效连接（由 readWebRC() 每帧更新）
-bool useWebRC        = false;  // 当前正在使用 Web RC 控制（与 webRCEnabled 保持同步）
-bool webRCUpdated    = false;  // 收到过至少一次摇杆数据（首次连接前为 false）
-bool webConsoleEnabled = false; // Web 调试控制台开关：POST /console/enable 开启，开启后 print() 写入缓冲区
-char webRCWarnMsg[64] = ""; // 待发送给前端的警告消息，发送一次后自动清空
+// ==================== link flags ====================
+bool webRCEnabled    = false;  // a web RC link is currently valid (updated every frame in readWebRC())
+bool useWebRC        = false;  // web RC is the active pilot input (kept equal to webRCEnabled)
+bool webRCUpdated    = false;  // at least one stick packet has arrived (false until the first one)
+bool webConsoleEnabled = false; // web debug console: POST /console/enable turns it on, then print() is copied into the buffer
+char webRCWarnMsg[64] = ""; // warning for the page; cleared after it is sent once
 
-// ==================== 最后处理的请求上下文（供响应构造使用）====================
-static int lastProcType        = 0;   // 1=摇杆 2=按钮 4=心跳
-static int lastProcButtonIdx   = -1;  // 按钮事件：按钮序号（0~15），其他请求为 -1
-static int lastProcButtonState = -1;  // 按钮事件：按下=1/松开=0，其他请求为 -1
+// ==================== last request, used to build the response ====================
+static int lastProcType        = 0;   // 1=stick 2=button 4=heartbeat
+static int lastProcButtonIdx   = -1;  // button index 0..15, or -1
+static int lastProcButtonState = -1;  // 1=pressed, 0=released, or -1
 
-// ==================== 摇杆暂存值（供状态端点读取）====================
-// 单位：油门 0~100（%），姿态轴 ±30（°），按下=1/松开=0
+// ==================== last stick values, for the status endpoint ====================
+// Units: throttle 0..100 (%), attitude axes +/-30 (deg), button 1=down 0=up
 float webRCRoll     = 0.0f;
 float webRCPitch    = 0.0f;
 float webRCYaw      = 0.0f;
 float webRCThrottle = 0.0f;
-uint16_t webRCButtons    = 0;       // 16位按钮位掩码，bit0=解锁 bit1=上锁 bit2=急停 bit6=STAB bit7=ACRO bit8=ALTHOLD
-unsigned long webRCLastUpdate = 0;  // 最后一次收包的 millis() 时间戳
+uint16_t webRCButtons    = 0;       // 16-bit button mask: bit0=arm bit1=disarm bit2=e-stop bit6=STAB bit7=ACRO bit8=ALTHOLD
+unsigned long webRCLastUpdate = 0;  // millis() of the last packet
 
-// ==================== 灵敏度缩放 ====================
-// 最终输出 = 处理后角度 × scale / STICK_MAX，结果写入 control* ([-1,1])
-// 减小 scale → 飞机响应更柔和；增大 → 更灵敏
-float webRCThrottleScale = 1.0f;    // 油门最大功率限制，1.0=100%，0.8=最多只能推到80%油门
-float webRCStickScale    = 0.85f;   // 横滚/俯仰灵敏度，建议范围 0.5~1.0
-float webRCYawScale      = 0.68f;   // 偏航灵敏度，偏航惯性小故单独偏低，建议范围 0.3~0.8
+// ==================== sensitivity ====================
+// output = processed angle * scale / STICK_MAX, written into control* ([-1,1])
+// smaller scale = softer; larger = more sensitive
+float webRCThrottleScale = 1.0f;    // throttle cap. 1.0=100%, 0.8=80% max
+float webRCStickScale    = 0.85f;   // roll/pitch sensitivity, useful range 0.5..1.0
+float webRCYawScale      = 0.68f;   // yaw sensitivity. Yaw inertia is small, so this stays lower. Range 0.3..0.8
 
-// ==================== 死区 ====================
-// 归一化空间（0~1 比例），摇杆归中误差在死区内输出恒为 0
-// 增大 → 中立区更宽、误触更少；减小 → 响应更灵敏但易漂移
-float stickDeadzone    = 0.06f;     // 横滚/俯仰/偏航共用，6% 归一化死区
-float throttleDeadzone = 0.06f;     // 油门低端死区，推杆低于此比例时输出 0%（防抖）
+// ==================== deadzone ====================
+// Normalized 0..1. Inside the deadzone the output is 0.
+// Larger = wider center and fewer false inputs. Smaller = more sensitive, easier to drift.
+float stickDeadzone    = 0.06f;     // roll, pitch, and yaw, 6%
+float throttleDeadzone = 0.06f;     // low-throttle deadzone. Below this the output is 0%.
 
-// ==================== 输入值域（勿随意修改，需与前端保持一致）====================
-static const float THROTTLE_MIN = 0.0f;    // 油门输出下限（%）
-static const float THROTTLE_MAX = 100.0f;  // 油门输出上限（%）
-static const float STICK_MAX    = 30.0f;   // 姿态轴最大角度（°），对应前端满偏；修改需同步调整 PID TILT_MAX
-static const float RAW_MAX      = 100.0f;  // 前端摇杆归一化满偏值，前端 JS 固定输出 ±100
+// ==================== input ranges (keep in sync with the page) ====================
+static const float THROTTLE_MIN = 0.0f;    // throttle output minimum (%)
+static const float THROTTLE_MAX = 100.0f;  // throttle output maximum (%)
+static const float STICK_MAX    = 30.0f;   // full-stick attitude (deg). A change must match TILT_MAX
+static const float RAW_MAX      = 100.0f;  // page stick full scale. The page JS always sends +/-100
 
-// ==================== 内部状态（运行时，勿手动修改）====================
-static float lastValidThrottle = 0.0f;     // 上次通过验证的油门值，异常时回退使用
-static float lastValidRoll     = 0.0f;     // 上次通过验证的横滚值
-static float lastValidPitch    = 0.0f;     // 上次通过验证的俯仰值
-static float lastValidYaw      = 0.0f;     // 上次通过验证的偏航值
-static unsigned long lastDataErrorTime = 0; // 上次数据异常时间，用于限速错误日志输出
+// ==================== runtime state ====================
+static float lastValidThrottle = 0.0f;     // last accepted throttle, used when a sample is rejected
+static float lastValidRoll     = 0.0f;     // last accepted roll
+static float lastValidPitch    = 0.0f;     // last accepted pitch
+static float lastValidYaw      = 0.0f;     // last accepted yaw
+static unsigned long lastDataErrorTime = 0; // last bad-sample time, rate-limits the error log
 
-// ==================== Web 服务器 ====================
-WebServer webRCServer(80);          // 主服务器：80端口（标准HTTP，无需在URL中写端口）
+// ==================== web server ====================
+WebServer webRCServer(80);          // port 80, so the URL needs no port
 
-// ------旧PCB印刷地址访问 :8080 → 301跳转到80端口；旧地址全部淘汰后可删除------------
-// 8080端口兼容重定向：堆指针，setupWebRC()中动态构造，BSS仅占4字节
-// ESP32-C3无旧用户，条件编译去除以避免单核上200ms自旋阻塞和额外socket占用
+// ------ Old PCBs printed :8080. Redirect 301 to port 80. Delete once those boards are gone. ------------
+// Heap pointer, constructed in setupWebRC(). BSS cost is 4 bytes.
+// ESP32-C3 has no old boards. The redirect is compiled out so a single core does not spin for 200 ms or hold an extra socket.
 #ifndef CONFIG_IDF_TARGET_ESP32C3
 static WiFiServer* redirectServer8080 = nullptr;
 #endif
-// ------旧PCB印刷地址访问 :8080 → 301跳转到80端口；旧地址全部淘汰后可删除------------
+// ------ Old PCBs printed :8080. Redirect 301 to port 80. Delete once those boards are gone. ------------
 
-// ==================== 控制台日志缓冲区 ====================
-#define CONSOLE_LINES    BOARD_CONSOLE_LINES    // 控制台行数：C3=20（节省~7KB RAM）/ ESP32&S3=50
-#define CONSOLE_LINE_LEN BOARD_CONSOLE_LINE_LEN  // 每行字符数：C3=160 / ESP32&S3=240
+// ==================== console log buffer ====================
+#define CONSOLE_LINES    BOARD_CONSOLE_LINES    // lines: C3=20 (~7 KB saved) / ESP32 and S3=50
+#define CONSOLE_LINE_LEN BOARD_CONSOLE_LINE_LEN  // chars per line: C3=160 / ESP32 and S3=240
 static char consoleBuf[CONSOLE_LINES][CONSOLE_LINE_LEN];
 static int  consoleTail   = 0;
 static int  consoleFilled = 0;
-static int  consoleTotal  = 0;   // 单调递增总行数，用于增量拉取
+static int  consoleTotal  = 0;   // monotonic line count, used as the incremental cursor
 
 #define CONSOLE_CMD_QUEUE_SIZE 4
 #define CONSOLE_CMD_LEN 64
@@ -109,7 +109,7 @@ void processConsoleCommandQueue() {
 }
 
 void webLog(const char* msg) {
-    // 按 \n 拆分写入，避免换行符污染 JSON
+    // Split on \n so a newline does not land inside the JSON string
     const char* start = msg;
     while (*start) {
         const char* end = strchr(start, '\n');
@@ -127,18 +127,18 @@ void webLog(const char* msg) {
     }
 }
 
-// ==================== 摇杆处理 ====================
+// ==================== sticks ====================
 
-// 归一化空间死区（输入/输出均为 [-1, 1]）
-// 超出死区的部分线性重映射到满幅，满推摇杆=满输出
+// Deadzone in normalized space. Input and output are both [-1, 1].
+// Outside the deadzone the remainder is scaled back to full range, so full stick is still full output.
 float applyDeadzone(float norm, float deadzone) {
     if (fabsf(norm) < deadzone) return 0.0f;
     float sign = (norm > 0.0f) ? 1.0f : -1.0f;
     return sign * (fabsf(norm) - deadzone) / (1.0f - deadzone);
 }
 
-// 处理姿态轴（横滚/俯仰/偏航）
-// 输入 raw ∈ [-100, +100]，输出 ∈ [-STICK_MAX, +STICK_MAX] (°)
+// Attitude axis (roll / pitch / yaw)
+// Input raw in [-100, +100], output in [-STICK_MAX, +STICK_MAX] (deg)
 float processAxis(float raw, float& lastValid) {
     if (isnan(raw) || isinf(raw) || fabsf(raw) > 1000.0f) {
         if (millis() - lastDataErrorTime > 2000) lastDataErrorTime = millis();
@@ -150,13 +150,13 @@ float processAxis(float raw, float& lastValid) {
     return lastValid;
 }
 
-// 处理油门轴
-// 前端：左摇杆Y轴，底部=-100，顶部=+100
-// 输出：pct ∈ [0, 100]
+// Throttle axis
+// Page: left stick Y, bottom=-100, top=+100
+// Output: pct in [0, 100]
 float processThrottle(float raw) {
     if (isnan(raw) || isinf(raw) || fabsf(raw) > 1000.0f) return lastValidThrottle;
     raw = constrain(raw, -RAW_MAX, RAW_MAX);
-    // 线性映射：-100→0%，0→50%，+100→100%
+    // Linear map: -100 -> 0%, 0 -> 50%, +100 -> 100%
     float pct = (raw + RAW_MAX) / (2.0f * RAW_MAX) * THROTTLE_MAX;
     if (pct < throttleDeadzone * THROTTLE_MAX) pct = 0.0f;
     pct = constrain(pct * webRCThrottleScale, THROTTLE_MIN, THROTTLE_MAX);
@@ -164,7 +164,7 @@ float processThrottle(float raw) {
     return pct;
 }
 
-// ==================== 核心数据处理 ====================
+// ==================== apply a packet ====================
 
 void setWebRCInput(float roll, float pitch, float yaw, float throttle, uint16_t buttons) {
     float pThrottle = processThrottle(throttle);
@@ -172,7 +172,7 @@ void setWebRCInput(float roll, float pitch, float yaw, float throttle, uint16_t 
     float pPitch    = processAxis(pitch, lastValidPitch);
     float pRoll     = processAxis(roll,  lastValidRoll);
 
-    // 暂存处理后的值（供状态端点读取）
+    // Keep the processed values for the status endpoint
     webRCThrottle = pThrottle;
     webRCYaw      = pYaw;
     webRCPitch    = pPitch;
@@ -181,7 +181,7 @@ void setWebRCInput(float roll, float pitch, float yaw, float throttle, uint16_t 
     webRCLastUpdate = millis();
     webRCUpdated  = true;
 
-    // 写入统一控制变量（与 SBUS/MAVLink 同路径）
+    // Write the shared control variables (same path as SBUS and MAVLink)
     controlRoll     = constrain(pRoll  * webRCStickScale / STICK_MAX, -1.0f, 1.0f);
     controlPitch    = constrain(pPitch * webRCStickScale / STICK_MAX, -1.0f, 1.0f);
     controlYaw      = constrain(pYaw   * webRCYawScale   / STICK_MAX, -1.0f, 1.0f);
@@ -197,7 +197,7 @@ void setWebRCInput(float roll, float pitch, float yaw, float throttle, uint16_t 
     }
 }
 
-// ==================== JSON 协议处理器 ====================
+// ==================== JSON protocol ====================
 
 const char* findJsonValue(const char* json, const char* key) {
     const char* p = strstr(json, key);
@@ -222,7 +222,7 @@ bool handleJSONProtocol(String& body) {
     lastProcButtonState = -1;
 
     switch (type) {
-        case 1: { // 摇杆数据
+        case 1: { // stick data
             float th = 0, r = 0, p = 0, y = 0;
             uint32_t ts = 0;
             if ((v = findJsonValue(json, "\"th\""))) th = atof(v);
@@ -233,7 +233,7 @@ bool handleJSONProtocol(String& body) {
             setWebRCInput(r, p, y, th, webRCButtons);
             break;
         }
-        case 2: { // 按钮事件
+        case 2: { // button event
             int idx = 0, state = 0;
             uint32_t ts = 0;
             if ((v = findJsonValue(json, "\"b\"")))  idx   = atoi(v);
@@ -249,7 +249,7 @@ bool handleJSONProtocol(String& body) {
             }
             break;
         }
-        case 4: // 心跳
+        case 4: // heartbeat
             webRCLastUpdate = millis();
             webRCUpdated    = true;
             break;
@@ -262,8 +262,7 @@ void setWebRCWarn(const char* msg) {
     webRCWarnMsg[sizeof(webRCWarnMsg) - 1] = '\0';
 }
 
-// ==================== 最后处理的请求上下文（供响应构造使用）====================
-// ==================== HTTP 请求处理 ====================
+// ==================== HTTP request ====================
 
 void handleWebRCRequest() {
     if (!webRCServer.hasArg("plain")) {
@@ -273,10 +272,10 @@ void handleWebRCRequest() {
     String body = webRCServer.arg("plain");
     if (handleJSONProtocol(body)) {
         char resp[320];
-        // warn 在按钮事件（rt=2）和心跳包（rt=4）响应中携带并清除：
-        //   rt=2：用户主动操作（解锁被拒等），需要即时反馈
-        //   rt=4：系统自动触发（低电自动上锁等），心跳周期≈2s，延迟可接受
-        // 摇杆包（rt=1）不消费 warn，避免摇杆包抢在 state=0 响应之前把 warn 清掉
+        // warn is attached and then cleared on button (rt=2) and heartbeat (rt=4) replies:
+        //   rt=2: a user action (arm rejected, and similar) needs an immediate reply
+        //   rt=4: a system event (low-battery disarm, and similar). Heartbeat is about 2 s, which is fine
+        // Stick packets (rt=1) do not consume warn, so they cannot clear it before the state=0 reply
         bool deliverWarn = (lastProcType == 2 || lastProcType == 4) && webRCWarnMsg[0];
         if (deliverWarn) {
             if (lastProcButtonIdx >= 0) {
@@ -288,7 +287,7 @@ void handleWebRCRequest() {
                     "{\"s\":\"ok\",\"m\":%d,\"arm\":%d,\"rt\":%d,\"warn\":\"%s\"}",
                     mode, (int)armed, lastProcType, webRCWarnMsg);
             }
-            webRCWarnMsg[0] = '\0'; // 发送后立即清空
+            webRCWarnMsg[0] = '\0'; // clear as soon as it is sent
         } else {
             if (lastProcButtonIdx >= 0) {
                 snprintf(resp, sizeof(resp),
@@ -306,7 +305,7 @@ void handleWebRCRequest() {
     }
 }
 
-// ==================== 连接状态 ====================
+// ==================== link state ====================
 
 bool isWebRCEnabled() {
     return webRCUpdated && (millis() - webRCLastUpdate < WEB_RC_TIMEOUT_MS);
@@ -316,9 +315,9 @@ bool isUsingWebRC() {
     return useWebRC && isWebRCEnabled();
 }
 
-// ------旧PCB印刷地址访问 :8080 → 301跳转到80端口；旧地址全部淘汰后可删除------------
-// 兼容旧遥控端口，处理8080端口的301重定向请求（WiFiServer原始TCP，手动解析HTTP）
-// ESP32-C3无旧用户，编译时完全去除，避免200ms自旋阻塞在单核上饿死WiFi任务
+// ------ Old PCBs printed :8080. Redirect 301 to port 80. Delete once those boards are gone. ------------
+// Old remote port. Serve a 301 on port 8080 (raw WiFiServer TCP, HTTP parsed by hand).
+// Compiled out on ESP32-C3. A 200 ms spin on the only core would starve the Wi-Fi task.
 #ifndef CONFIG_IDF_TARGET_ESP32C3
 static void handleRedirect8080() {
     if (!redirectServer8080) return;
@@ -331,13 +330,13 @@ static void handleRedirect8080() {
     while (!client.available() && millis() - t0 < 200) {}
 
     if (client.available()) {
-        // 解析请求行：GET /path HTTP/1.1
+        // Request line: GET /path HTTP/1.1
         String reqLine = client.readStringUntil('\n');
         int s1 = reqLine.indexOf(' ');
         int s2 = reqLine.indexOf(' ', s1 + 1);
         if (s1 >= 0 && s2 > s1) path = reqLine.substring(s1 + 1, s2);
 
-        // 读取请求头，提取Host（去掉 :8080 端口部分）
+        // Read headers and take Host, dropping the :8080 port
         while (client.available()) {
             String line = client.readStringUntil('\n');
             line.trim();
@@ -358,9 +357,9 @@ static void handleRedirect8080() {
     client.stop();
 }
 #endif
-// ------旧PCB印刷地址访问 :8080 → 301跳转到80端口；旧地址全部淘汰后可删除------------
+// ------ Old PCBs printed :8080. Redirect 301 to port 80. Delete once those boards are gone. ------------
 
-// ==================== 主设置函数 ====================
+// ==================== setup ====================
 
 void setupWebRC() {
     print("Setup WEB RC\n");
@@ -404,8 +403,8 @@ void setupWebRC() {
             String line = consoleBuf[idx];
             line.replace("\\", "\\\\");  // \ → \\
             line.replace("\"", "\\\"");  // " → \"
-            line.replace("\n", "\\n");    // 兜底：换行 → \n
-            line.replace("\r", "\\r");    // 兜底：CR   → \r
+            line.replace("\n", "\\n");    // leftover newline -> \n
+            line.replace("\r", "\\r");    // leftover CR -> \r
             json += line + "\"";
         }
         json += "]}";
@@ -460,29 +459,29 @@ void setupWebRC() {
 
     webRCServer.begin();
 
-    // ------旧PCB印刷地址访问 :8080 → 301跳转到80端口；旧地址全部淘汰后可删除------------
+    // ------ Old PCBs printed :8080. Redirect 301 to port 80. Delete once those boards are gone. ------------
 #ifndef CONFIG_IDF_TARGET_ESP32C3
-    redirectServer8080 = new WiFiServer(8080); // 堆构造，不占BSS
-    redirectServer8080->begin(); // 8080端口轻量重定向（WiFiServer），兼容旧PCB印刷地址
+    redirectServer8080 = new WiFiServer(8080); // heap, so it does not sit in BSS
+    redirectServer8080->begin(); // light redirect on port 8080 for old PCB silkscreen URLs
 #endif
-    // ------旧PCB印刷地址访问 :8080 → 301跳转到80端口；旧地址全部淘汰后可删除------------
+    // ------ Old PCBs printed :8080. Redirect 301 to port 80. Delete once those boards are gone. ------------
 
-    print("✓ Web RC 已启动，访问地址: http://192.168.4.1\n");
-    print("  死区 摇杆=%.0f%% 油门=%.0f%% | 缩放 摇杆=%.2f 偏航=%.2f\n",
+    print("Web RC started: http://192.168.4.1\n");
+    print("  deadzone stick=%.0f%% throttle=%.0f%% | scale stick=%.2f yaw=%.2f\n",
           stickDeadzone * 100.0f, throttleDeadzone * 100.0f,
           webRCStickScale, webRCYawScale);
 }
 
-// ==================== 主循环函数 ====================
+// ==================== loop ====================
 
 void readWebRC() {
     webRCServer.handleClient();
 
-    // ------旧PCB印刷地址访问 :8080 → 301跳转到80端口；旧地址全部淘汰后可删除------------
+    // ------ Old PCBs printed :8080. Redirect 301 to port 80. Delete once those boards are gone. ------------
 #ifndef CONFIG_IDF_TARGET_ESP32C3
-    handleRedirect8080(); // 处理8080重定向，兼容旧PCB访问
+    handleRedirect8080(); // 8080 redirect for old PCB URLs
 #endif
-    // ------旧PCB印刷地址访问 :8080 → 301跳转到80端口；旧地址全部淘汰后可删除------------
+    // ------ Old PCBs printed :8080. Redirect 301 to port 80. Delete once those boards are gone. ------------
     
     if (isWebRCEnabled()) {
         webRCEnabled = useWebRC = true;
@@ -492,7 +491,7 @@ void readWebRC() {
 }
 
 #else
-void setupWebRC() { print("Web RC已禁用\n"); }
+void setupWebRC() { print("Web RC disabled\n"); }
 void readWebRC()  {}
 void processConsoleCommandQueue() {}
 #endif

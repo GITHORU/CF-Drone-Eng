@@ -1,4 +1,3 @@
-//实用函数
 // Utility functions
 
 #pragma once
